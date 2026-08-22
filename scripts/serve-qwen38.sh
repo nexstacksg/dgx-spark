@@ -11,9 +11,8 @@
 set -euo pipefail
 
 # vLLM nightly venv (2026-08-22): needed for DFlash2 speculative decoding
-# (DFlash2DraftModel is in no stable release yet). Fallbacks kept on disk:
-#   .venv-v0271 — vLLM 0.27.1, works with the MTP speculative config
-#   .venv       — vLLM 0.25.0, still serves qwen-omni; do not touch
+# (DFlash2DraftModel is in no stable release yet).
+#   .venv — vLLM 0.25.0, still serves qwen-omni; do not touch
 VENV="$HOME/Documents/GitHub/agentic/.venv-nightly"
 MODEL="$HOME/models/Qwen3.8-27B-NVFP4"
 

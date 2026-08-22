@@ -118,7 +118,7 @@ docker group), no sudo:
 - **vLLM** with torch cu130 — official aarch64 CUDA wheels from PyPI. Two venvs since
   2026-08-22: the agent server runs a **nightly** (`.venv-nightly`, 0.26.1rc) because
   DFlash2 speculative decoding is in no stable release yet; omni stays on `.venv`
-  (0.25.0). Fallback `.venv-v0271` (0.27.1, works with the MTP config) is kept on disk.
+  (0.25.0).
 - **FFmpeg shared libs** in `~/.local/ffmpeg-shared/lib` (BtbN 7.1 build): vLLM's
   torchcodec dlopens `libavutil.so.*` at import; there is no system FFmpeg. The serve
   scripts put this dir on `LD_LIBRARY_PATH`. A static `ffmpeg` binary (for Hermes voice
