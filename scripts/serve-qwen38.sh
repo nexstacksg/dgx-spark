@@ -21,8 +21,18 @@ MODEL="$HOME/models/Qwen3.8-27B-NVFP4"
 export LD_LIBRARY_PATH="$HOME/.local/ffmpeg-shared/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 # vLLM's compile step subprocesses `ninja`; under systemd the venv is not
-# activated, so its bin dir must be on PATH explicitly
-export PATH="$VENV/bin:$PATH"
+# activated, so its bin dir must be on PATH explicitly.
+#
+# /usr/local/cuda/bin must ALSO be explicit: it is only added by
+# /etc/profile.d/nv_paths.sh, which login shells read but the boot-time
+# `systemd --user` manager (started by linger, before GNOME login) does not.
+# Without `nvcc` on PATH vLLM's has_flashinfer() is False, the
+# vllm::flashinfer_mm_fp4 custom op is never registered, and the cached AOT
+# graph that calls it dies in profile_run:
+#   AttributeError: '_OpNamespace' 'vllm' object has no attribute 'flashinfer_mm_fp4'
+# That killed the first start attempt on every reboot (2026-09-02, 2026-09-09);
+# only systemd's retry, which ran after login had imported the shell PATH, came up.
+export PATH="$VENV/bin:/usr/local/cuda/bin:$PATH"
 
 # GB10 is sm_121; CUTLASS DSL kernels need the arch spelled with the 'a' suffix
 export CUTE_DSL_ARCH="${CUTE_DSL_ARCH:-sm_121a}"

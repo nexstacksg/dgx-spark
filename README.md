@@ -124,7 +124,9 @@ docker group), no sudo:
   scripts put this dir on `LD_LIBRARY_PATH`. A static `ffmpeg` binary (for Hermes voice
   messages) is in `~/.local/bin`.
 - **systemd user services**, enabled at boot, with `loginctl enable-linger` set so they
-  run without an active login session:
+  run without an active login session. Because they start *before* GNOME login they do not
+  see `/etc/profile.d` PATH additions — the serve scripts export `/usr/local/cuda/bin`
+  themselves (see "First start after a reboot crashes" below):
 
 ```bash
 systemctl --user status qwen38.service qwen-omni.service   # health
@@ -225,30 +227,45 @@ invalidates the cache and you pay full price again.
 Nothing listens on :8000 for that entire window. Clients get connection refused, not a
 "still loading" response.
 
-### Stale torch-compile cache after a vLLM/flashinfer reinstall
+### First start after a reboot crashes, then the retry succeeds
 
-The cache cuts restarts to ~half, but it records references to vLLM *custom ops* — and a
-reinstall of vLLM or flashinfer can leave a cached graph pointing at an op that no longer
-registers. The engine then dies during memory profiling on **every** restart:
+On every reboot the **first** `qwen38.service` attempt dies ~3.5 min in, during memory
+profiling, and only systemd's `Restart=on-failure` retry (15 s later) comes up. Net effect:
+nothing listens on :8000 for ~8 minutes after boot instead of ~4, and `qwen-omni` queues
+behind it. The error is:
 
 ```
 AttributeError: '_OpNamespace' 'vllm' object has no attribute 'flashinfer_mm_fp4'
 RuntimeError: Engine core initialization failed.
 ```
 
-This happened on 2026-08-22 right after the nightly-venv migration: the AOT cache built at
-15:30 (minutes after the 15:24 reinstall) crash-looped `qwen38.service` with the error
-above. The loaded run also fell back to the wrong GEMM path (`CutlassNvFp4LinearKernel`
-instead of `FlashInferCutlassNvFp4LinearKernel`).
+Root cause (diagnosed 2026-09-09; same crash-then-retry pattern in the 2026-09-02 boot log):
+`/usr/local/cuda/bin` is only put on PATH by `/etc/profile.d/nv_paths.sh`, which login
+shells read but the boot-time `systemd --user` manager (started by linger, before GNOME
+login) does not — `/etc/environment` has no CUDA dir. vLLM's `has_flashinfer()` requires
+`nvcc` on PATH (no `flashinfer-cubin` package is installed), so on the first attempt it
+returns False and the `vllm::flashinfer_mm_fp4` custom op is never registered — but the
+cached AOT-compiled graph still calls it. Once GNOME logs the user in it imports the shell
+environment into the user manager, so the retry inherits the CUDA path and works.
 
-Fix: delete the AOT cache and let it rebuild (~4 min extra on the next start):
+Fix (applied 2026-09-09): both serve scripts now export `/usr/local/cuda/bin` explicitly.
+Do not rely on the user manager's imported environment. Verify with:
+
+```bash
+journalctl --user -u qwen38.service -b | grep -c 'Scheduled restart job'   # want 0
+```
+
+Without `nvcc` vLLM also silently picks the slower `CutlassNvFp4LinearKernel` GEMM instead
+of `FlashInferCutlassNvFp4LinearKernel`, so a server that *does* come up this way is slower.
+
+**Stale torch-compile cache** is the other thing that produces the same AttributeError: a
+vLLM/flashinfer reinstall can leave a cached graph pointing at an op that no longer
+registers, and then it fails on **every** attempt, not just the first. If the retry also
+fails after touching package versions, delete the AOT cache and let it rebuild (~4 min):
 
 ```bash
 rm -rf ~/.cache/vllm/torch_compile_cache/torch_aot_compile/<hash-for-this-config>
 ```
-
-If you see any `AttributeError: ... object has no attribute` from inside EngineCore after
-touching package versions, suspect this cache before suspecting the packages.
 
 ### Health check (failures are otherwise invisible)
 
