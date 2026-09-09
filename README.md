@@ -325,6 +325,38 @@ curl http://localhost:8000/v1/chat/completions -H 'Content-Type: application/jso
 
 ---
 
+### Running it by hand
+
+Nothing needs to be started manually after a reboot — both units are enabled and
+lingering is on. Day to day:
+
+```bash
+systemctl --user status qwen38.service qwen-omni.service   # is it up?
+journalctl --user -u qwen38.service -f                     # watch the agent server load
+systemctl --user restart qwen38.service                    # after editing its serve script
+systemctl --user stop qwen38.service qwen-omni.service     # free the memory
+systemctl --user start qwen38.service qwen-omni.service    # bring both back (omni waits for :8000)
+```
+
+A unit stopped while it was still loading shows `failed` (result `timeout` or `signal`)
+instead of `inactive`, because the stop had to be force-killed. That is cosmetic; systemd
+does not auto-restart after a manual stop, and `start` works normally.
+
+To run a server in the foreground instead — for example to see startup output directly —
+stop its unit first so the port and memory are free, then run its serve script. The
+scripts set up PATH, `LD_LIBRARY_PATH` and the venv themselves, so no activation is
+needed. Ctrl+C stops it; the two servers must still not load at the same time.
+
+```bash
+systemctl --user stop qwen38.service
+~/Documents/GitHub/dgx-spark/scripts/serve-qwen38.sh
+```
+
+Budget ~4 min for a warm start and up to ~12 for a cold one; the port refuses connections
+until the log prints `Application startup complete`.
+
+---
+
 ## Hermes Agent (as built)
 
 Installed from PyPI as a uv tool (`uv tool install hermes-agent`, v0.18.2) — binaries
