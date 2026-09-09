@@ -81,7 +81,7 @@ def main(wav_path):
         task = json.loads(call["function"]["arguments"])["task"]
         print(f"[delegating to agent] {task}")
         agent_resp = post(AGENT, {
-            "model": "qwen3.6-35b-a3b",
+            "model": "qwen3.8-27b",
             "messages": [{"role": "user", "content": task}],
         })
         result = agent_resp["choices"][0]["message"]["content"]

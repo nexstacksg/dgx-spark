@@ -10,10 +10,10 @@
 # gpu-memory-utilization: the three together are the memory + bandwidth budget.
 set -euo pipefail
 
-# vLLM nightly venv (2026-08-22): needed for DFlash2 speculative decoding
-# (DFlash2DraftModel is in no stable release yet).
+# vLLM 0.29.0 stable venv (2026-09-09): DFlash2 speculative decoding landed in
+# 0.28.0, so the 2026-08-22 nightly (.venv-nightly, 0.26.1rc) is no longer needed.
 #   .venv — vLLM 0.25.0, still serves qwen-omni; do not touch
-VENV="$HOME/Documents/GitHub/agentic/.venv-nightly"
+VENV="$HOME/Documents/GitHub/dgx-spark/.venv-0.29"
 MODEL="$HOME/models/Qwen3.8-27B-NVFP4"
 
 # torchcodec needs FFmpeg shared libs; no system ffmpeg (no sudo), so we ship
@@ -36,6 +36,13 @@ export PATH="$VENV/bin:/usr/local/cuda/bin:$PATH"
 
 # GB10 is sm_121; CUTLASS DSL kernels need the arch spelled with the 'a' suffix
 export CUTE_DSL_ARCH="${CUTE_DSL_ARCH:-sm_121a}"
+
+# Cap FlashInfer's JIT kernel builds (ninja -j). Unbounded, a fresh flashinfer
+# version compiles the NVFP4 CUTLASS GEMM with ~64 parallel nvcc/cicc processes
+# at ~4 GB each, which OOM-killed the whole box on 2026-09-09 (vLLM 0.29.0 /
+# flashinfer 0.6.18 first start; omni + Chrome were resident). Only affects
+# first-start compile time; cached kernels are unaffected.
+export MAX_JOBS="${MAX_JOBS:-2}"
 
 exec "$VENV/bin/vllm" serve "$MODEL" \
   --served-model-name qwen3.8-27b \

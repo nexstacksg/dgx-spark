@@ -20,6 +20,15 @@ Everything runs on-prem, without root, as user services. No data leaves the mach
 > **2026-08-22:** agent model migrated from Qwen3.6-35B-A3B (FP8) to **Qwen3.8-27B
 > (NVFP4)**, and the startup race that was silently killing both servers was fixed —
 > see *Startup ordering* below.
+>
+> **2026-09-09:** agent server moved from the vLLM nightly to **vLLM 0.29.0 stable**
+> (`.venv-0.29`, flashinfer 0.6.18). Re-verified the same evening: chat ✓, reasoning
+> separation ✓, tool calling ✓, Hermes chat + terminal-tool loop ✓, warm restart to
+> `/v1/models` in 250 s with zero crash-retries ✓. Two new traps were found and fixed on
+> the way — unbounded FlashInfer JIT builds OOM-killing the box (`MAX_JOBS=2`) and a
+> cold start that now takes ~12 min (health-check grace raised to 1800 s). The
+> boot-time CUDA PATH fix (below) has not yet been exercised across a reboot; check
+> the restart-job count after the next one.
 
 ---
 
@@ -115,10 +124,10 @@ docker group), no sudo:
 - **Python**: uv-managed CPython 3.12 in `.venv/` — NOT the system Python. The system
   Python has no dev headers (`python3-dev` needs sudo) and Triton compiles a CUDA stub
   at startup that requires `Python.h`. The uv-managed runtime bundles its headers.
-- **vLLM** with torch cu130 — official aarch64 CUDA wheels from PyPI. Two venvs since
-  2026-08-22: the agent server runs a **nightly** (`.venv-nightly`, 0.26.1rc) because
-  DFlash2 speculative decoding is in no stable release yet; omni stays on `.venv`
-  (0.25.0).
+- **vLLM** with torch cu130 — official aarch64 CUDA wheels from PyPI. Two venvs: the
+  agent server runs `.venv-0.29` (vLLM 0.29.0, flashinfer 0.6.18, since 2026-09-09 —
+  DFlash2 speculative decoding landed in stable 0.28.0, which retired the 2026-08-22
+  nightly `.venv-nightly`); omni stays on `.venv` (0.25.0). Do not upgrade `.venv`.
 - **FFmpeg shared libs** in `~/.local/ffmpeg-shared/lib` (BtbN 7.1 build): vLLM's
   torchcodec dlopens `libavutil.so.*` at import; there is no system FFmpeg. The serve
   scripts put this dir on `LD_LIBRARY_PATH`. A static `ffmpeg` binary (for Hermes voice
@@ -147,7 +156,7 @@ were discovered the hard way and should not be changed casually:
   falls back to 16-bit and the ~5.6% KV footprint becomes ~15%.
 - `--speculative-config '{"method":"dflash",...}'` — switched 2026-08-22 from the model's
   built-in MTP head to a DFlash2 draft model (`~/models/Qwen3.8-27B-DFlash2`,
-  `num_speculative_tokens: 7`; requires the nightly venv). This recovers part of the
+  `num_speculative_tokens: 7`; needs vLLM >= 0.28). This recovers part of the
   decode speed lost by moving from a 3B-active MoE to a dense 27B, but the speedup is
   **content-dependent** — measured on this box: ~55 tok/s short answers, ~38 tok/s code,
   ~20 tok/s free prose (raw non-speculative decode is ~10-12). Check acceptance in the
@@ -159,6 +168,11 @@ were discovered the hard way and should not be changed casually:
   send `reasoning_effort` (or `enable_thinking: false`) per request to override either way.
 - `CUTE_DSL_ARCH=sm_121a` — GB10 reports `sm_121`, but CUTLASS DSL kernels want the `a`
   suffix. Harmless if unused.
+- `MAX_JOBS=2` (agent script) — caps FlashInfer's JIT `ninja -j`. Unbounded, a fresh
+  flashinfer version compiles the NVFP4 CUTLASS GEMM with ~64 parallel `cicc` processes at
+  ~4 GB each, which OOM-killed the whole box on 2026-09-09 (first start of vLLM 0.29.0 /
+  flashinfer 0.6.18 with omni and Chrome resident). Only slows first-start compiles;
+  cached kernels under `~/.cache/flashinfer/<ver>/121a/cached_ops/` are unaffected.
 - `--reasoning-parser qwen3` — Qwen3.8 is a thinking model; without this, chain-of-thought
   leaks into `content` instead of `reasoning_content`.
 - `export PATH="$VENV/bin:$PATH"` in the scripts — vLLM's startup compile subprocesses
@@ -201,13 +215,13 @@ forks, not when the model finishes loading, so `After=` orders the launch and th
 The fix is `ExecStartPre` in `qwen-omni.service`, which blocks on real HTTP readiness:
 
 ```ini
-ExecStartPre=%h/Documents/GitHub/agentic/scripts/wait-for-vllm.sh http://127.0.0.1:8000/v1/models 1800
+ExecStartPre=%h/Documents/GitHub/dgx-spark/scripts/wait-for-vllm.sh http://127.0.0.1:8000/v1/models 1800
 ```
 
 The `0.50 / 0.30` split is a **global** budget, not a per-process reservation — it only
 holds if the loads are serialised.
 
-### Cold start takes ~9 minutes
+### Cold start takes ~9 minutes (~12 with a cold FlashInfer cache), warm restart ~4
 
 Budget for it. A cold `qwen38.service` start is roughly:
 
@@ -222,7 +236,14 @@ Budget for it. A cold `qwen38.service` start is roughly:
 The two compile passes are the price of `--speculative-config` (MTP or DFlash2); without that flag
 startup is roughly half. Results are cached under `~/.cache/vllm/torch_compile_cache/`, so
 **restarts are much faster than the first run** — but a vLLM upgrade or a flag change
-invalidates the cache and you pay full price again.
+invalidates the cache and you pay full price again. A flashinfer upgrade adds a third
+cost on top: ~25 attention/GEMM/sampling kernels are JIT-compiled with `nvcc` into
+`~/.cache/flashinfer/<ver>/121a/cached_ops/`. Measured 2026-09-09 (vLLM 0.29.0, all
+caches cold, `MAX_JOBS=2`, omni resident): **~12 min** from start to `/v1/models`.
+With every cache warm, a `systemctl --user restart qwen38.service` measured **250 s**
+to `/v1/models` on 2026-09-09 (weights ~30 s, the rest is compile-cache load, profiling
+and CUDA-graph capture). Clients — including Hermes — get `APIConnectionError` for that
+whole window; that is the restart, not a broken server.
 
 Nothing listens on :8000 for that entire window. Clients get connection refused, not a
 "still loading" response.
@@ -280,8 +301,8 @@ systemctl --user list-timers vllm-healthcheck.timer
 journalctl --user -u vllm-healthcheck.service    # what it has restarted
 ```
 
-⚠️ The third argument to `healthcheck-vllm.sh` is a **startup grace period** (1200s agent /
-1800s omni) and must stay longer than a cold start. Without it the health check restarts the
+⚠️ The third argument to `healthcheck-vllm.sh` is a **startup grace period** (1800s for
+both units since 2026-09-09; was 1200s agent) and must stay longer than a cold start. Without it the health check restarts the
 server *during* its 9-minute load, forever, and it never comes up. This happened on
 2026-08-22: the kill landed inside FastAPI route registration and surfaced as
 

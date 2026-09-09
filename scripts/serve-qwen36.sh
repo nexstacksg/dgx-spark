@@ -4,7 +4,7 @@
 # gpu-memory-utilization: the three together are the memory + bandwidth budget.
 set -euo pipefail
 
-VENV="$HOME/Documents/GitHub/agentic/.venv"
+VENV="$HOME/Documents/GitHub/dgx-spark/.venv"
 MODEL="$HOME/models/Qwen3.6-35B-A3B-FP8"
 
 # torchcodec needs FFmpeg shared libs; no system ffmpeg (no sudo), so we ship

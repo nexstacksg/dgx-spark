@@ -6,7 +6,7 @@
 # Speech synthesis (talker) is handled downstream — see scripts/voice_demo.py.
 set -euo pipefail
 
-VENV="$HOME/Documents/GitHub/agentic/.venv"
+VENV="$HOME/Documents/GitHub/dgx-spark/.venv"
 MODEL="$HOME/models/Qwen3-Omni-30B-A3B-Instruct"
 
 # torchcodec needs FFmpeg shared libs; no system ffmpeg (no sudo), so we ship
